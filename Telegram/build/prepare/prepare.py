@@ -1420,6 +1420,10 @@ depends:python/Scripts/activate.bat
     ninja -C out/Debug%FolderPostfix% common crash_generation_client exception_handler
 release:
     ninja -C out/Release%FolderPostfix% common crash_generation_client exception_handler
+# dump_syms 只用于事后符号化崩溃转储，客户端与打包都不需要它；它却要求 VS 的 ATL
+# 组件 (atlbase.h / atlcomcli.h)，GitHub runner 未安装 → 用 linux: 作用域（Windows 上
+# 永不匹配）让它永不构建。若将来确实要在本地符号化，另行在装了 ATL 的机器上构建。
+linux:
     cd tools\\windows\\dump_syms
     gyp dump_syms.gyp --format=msvs
     msbuild -m dump_syms.vcxproj /property:Configuration=Release /property:Platform="x64" %ToolsetProp%
