@@ -99,6 +99,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/editor/iv_editor_session.h"
 #include "iv/iv_rich_page.h"
 #include "lang/lang_keys.h"
+#include "lang/translate_provider.h"
 #include "main/main_app_config.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
@@ -139,6 +140,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_iv.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
+
+// QAction is available transitively (same include set as iv_editor_widget.cpp,
+// which also uses &QAction::triggered). Note the Windows CI builds against
+// Qt 5.15, where QAction lives in QtWidgets and <QtGui/QAction> does not exist.
+#include <QtWidgets/QMenu>
 
 namespace HistoryView {
 namespace {
@@ -3093,9 +3099,55 @@ void ComposeControls::initKeyHandler() {
 	});
 }
 
+namespace {
+
+void TranslateComposeDraft(
+		not_null<Ui::InputField*> field,
+		History *history) {
+	if (!history) {
+		return;
+	}
+	const auto text = field->getLastText().trimmed();
+	if (text.isEmpty()) {
+		return;
+	}
+	// The provider must outlive the async request, so the completion handler
+	// below keeps it alive by capturing a copy of the shared pointer.
+	const auto provider = std::shared_ptr<Ui::TranslateProvider>(
+		Ui::CreateTranslateProvider(&history->session()).release());
+	const auto raw = provider.get();
+	provider->request(
+		Ui::PrepareTranslateProviderRequest(
+			raw,
+			history->peer,
+			MsgId(0),
+			TextWithEntities{ text }),
+		Ui::TranslateOutLanguage(),
+		crl::guard(field.get(), [field, provider](
+				Ui::TranslateProviderResult result) {
+			if (!result.text) {
+				return;
+			}
+			const auto translated = result.text->text.trimmed();
+			if (!translated.isEmpty()) {
+				field->setText(translated);
+			}
+		}));
+}
+
+} // namespace
+
 void ComposeControls::initField() {
 	_field->setMaxHeight(st::historyComposeFieldMaxHeight);
 	updateSubmitSettings();
+	_field->addContextMenuHook([=](Ui::InputField::ContextMenuRequest request) {
+		const auto action = request.menu->addAction(
+			u"Translate draft (%1)"_q.arg(
+				Ui::TranslateOutLanguageCode().toUpper()));
+		QObject::connect(action, &QAction::triggered, [=] {
+			TranslateComposeDraft(_field, _history);
+		});
+	});
 	_field->submits(
 	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
 		// Classify each submit once, before anyone handles it: a send

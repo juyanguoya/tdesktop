@@ -21,6 +21,10 @@ namespace Ui {
 [[nodiscard]] std::unique_ptr<TranslateProvider> CreateTranslateProvider(
 	not_null<Main::Session*> session);
 
+[[nodiscard]] QString TranslateOutLanguageCode();
+
+[[nodiscard]] LanguageId TranslateOutLanguage();
+
 [[nodiscard]] TranslateProviderRequest PrepareTranslateProviderRequest(
 	not_null<TranslateProvider*> provider,
 	not_null<PeerData*> peer,

@@ -18,6 +18,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/translate_url_provider.h"
 #include "platform/platform_translate_provider.h"
 
+#include <QtCore/QLocale>
+
 namespace {
 
 base::options::option<QString> OptionTranslateUrlTemplate({
@@ -25,6 +27,14 @@ base::options::option<QString> OptionTranslateUrlTemplate({
 	.name = "Translate URL template",
 	.description = "Template URL for custom translation provider."
 		" Supports %q text, %f source language and %t target language.",
+});
+
+base::options::option<QString> OptionTranslateOutLanguage({
+	.id = "translate-out-language",
+	.name = "Translate outgoing to",
+	.description = "Two letter language code the composer translate action"
+		" turns the draft into, e.g. \"en\".",
+	.defaultValue = "en",
 });
 
 } // namespace
@@ -43,6 +53,18 @@ std::unique_ptr<TranslateProvider> CreateTranslateProvider(
 		return Platform::CreateTranslateProvider();
 	}
 	return CreateMTProtoTranslateProvider(session);
+}
+
+QString TranslateOutLanguageCode() {
+	const auto code = OptionTranslateOutLanguage.value().trimmed();
+	return code.isEmpty() ? u"en"_q : code;
+}
+
+LanguageId TranslateOutLanguage() {
+	const auto locale = QLocale(TranslateOutLanguageCode());
+	const auto language = locale.language();
+	return LanguageId{
+		(language != QLocale::C) ? language : QLocale::English };
 }
 
 TranslateProviderRequest PrepareTranslateProviderRequest(

@@ -1,0 +1,3 @@
+{
+  "translate-url-template": "https://YOUR-BACKEND-HOST/tr?q=%q&f=%f&t=%t&k=YOUR-API-KEY"
+}
