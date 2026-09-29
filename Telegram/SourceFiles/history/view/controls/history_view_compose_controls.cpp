@@ -3150,7 +3150,12 @@ void ComposeControls::initField() {
 	});
 	// hw: vendor parity - translate the draft automatically while typing, so
 	// that a Chinese draft is already English when it is sent.
-	if (Ui::TranslateAutoOut() && _history) {
+	// Installed unconditionally: initField() runs from init(), before
+	// setHistory() has ever run, so _history is still nullptr here and gating on
+	// it silently disabled the feature in every chat. Gating on the option here
+	// would instead freeze a value read before the options file is loaded. Both
+	// are checked when the timer fires.
+	{
 		constexpr auto kHwAutoOutDelay = crl::time(1200);
 		const auto last = std::make_shared<QString>();
 		const auto hasCjk = [](const QString &text) {
@@ -3164,6 +3169,9 @@ void ComposeControls::initField() {
 			return false;
 		};
 		const auto timer = std::make_shared<base::Timer>([=] {
+			if (!Ui::TranslateAutoOut() || !_history) {
+				return;
+			}
 			const auto text = _field->getLastText().trimmed();
 			if (text.isEmpty() || (text == *last) || !hasCjk(text)) {
 				return;
