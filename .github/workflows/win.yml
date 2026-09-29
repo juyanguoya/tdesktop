@@ -51,10 +51,11 @@ jobs:
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
 
     strategy:
+      fail-fast: false            # 兄弟作业失败不得取消我们要的产物
       matrix:
-        arch: [x64_x86, x64, arm64]
-        qt: ["", qt6]
-        generator: ["", "Ninja Multi-Config"]
+        arch: [x64, x64_x86]        # x64 = 64 位（交付用）；x64_x86 = 32 位（对照）
+        qt: [""]                    # 不编 Qt6：它要从源码编 Qt6，本机 runner 磁盘扛不住，也用不到
+        generator: ["Ninja Multi-Config"]
         exclude:
           - arch: arm64
             qt: ""
