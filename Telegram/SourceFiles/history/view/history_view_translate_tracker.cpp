@@ -75,7 +75,9 @@ void TranslateTracker::setup() {
 		std::move(autoTranslationValue),
 		std::move(forceTranslation),
 		[](bool enabled, bool automatic, bool forced) {
-			return enabled && (automatic || forced);
+			// hw: with translate-auto-in on, translation must not depend on a
+			// settings toggle the user has to find first (vendor parity).
+			return forced || (enabled && automatic);
 		});
 	_trackingLanguage.value() | rpl::on_next([=](bool tracking) {
 		_trackingLifetime.destroy();
