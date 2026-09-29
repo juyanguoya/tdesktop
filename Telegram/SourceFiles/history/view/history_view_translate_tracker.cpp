@@ -82,12 +82,15 @@ void TranslateTracker::setup() {
 	_trackingLanguage.value() | rpl::on_next([=](bool tracking) {
 		_trackingLifetime.destroy();
 		if (tracking) {
-			// hw: pick the translation target automatically, otherwise no
-			// translation is ever requested.
+			// hw: create the history translation state explicitly instead of only calling
+			// translateTo(), which is a no-op while HistoryTranslation does not exist yet
+			// (see startBunch()).
 			if (!_history->translatedTo()) {
 				if (const auto to = Ui::TranslateInLanguage()) {
+					_history->translateOfferFrom(to);
 					_history->translateTo(to);
 					if (const auto migrated = _history->migrateFrom()) {
+						migrated->translateOfferFrom(to);
 						migrated->translateTo(to);
 					}
 				}
@@ -108,6 +111,19 @@ bool TranslateTracker::enoughForRecognition() const {
 
 void TranslateTracker::startBunch() {
 	_addedInBunch = 0;
+	// hw: forced auto-translation must have a working history translation state before
+	// _bunchTranslatedTo is captured. HistoryTranslation is created *only* by
+	// History::translateOfferFrom(non-empty id) and History::translateTo() silently does
+	// nothing while it is absent, so a chat with fewer than kEnoughForTranslation
+	// messages -- where checkRecognized() never reaches translateOfferFrom -- would never
+	// translate anything at all. Do not depend on language recognition here: very short
+	// texts such as "Hello" are not recognized as any language.
+	if (Ui::TranslateAutoIn() && !_history->translatedTo()) {
+		if (const auto to = Ui::TranslateInLanguage()) {
+			_history->translateOfferFrom(to);
+			_history->translateTo(to);
+		}
+	}
 	_bunchTranslatedTo = _history->translatedTo();
 	++_generation;
 }
