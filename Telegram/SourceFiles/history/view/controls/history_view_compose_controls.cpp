@@ -3101,6 +3101,52 @@ void ComposeControls::initKeyHandler() {
 
 namespace {
 
+// hw: outgoing auto-translation helpers, shared by the while-typing path and by
+// the send-time path so that both behave identically.
+[[nodiscard]] bool HwHasCjk(const QString &text) {
+	for (const auto &ch : text) {
+		const auto u = ch.unicode();
+		if ((u >= 0x3400 && u <= 0x9FFF)
+			|| (u >= 0xF900 && u <= 0xFAFF)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+[[nodiscard]] bool HwNeedsOutTranslation(const QString &text) {
+	if (text.trimmed().isEmpty()
+		|| !HwHasCjk(text)
+		|| !Ui::TranslateAutoOut()) {
+		return false;
+	}
+	const auto target = Ui::TranslateOutLanguageCode().toLower();
+	return !target.isEmpty() && (target != u"zh"_q);
+}
+
+template <typename Callback>
+void HwTranslateOut(
+		not_null<Main::Session*> session,
+		not_null<QObject*> context,
+		not_null<PeerData*> peer,
+		const QString &text,
+		Callback &&done) {
+	const auto callback = std::move(done);
+	const auto provider = std::shared_ptr<Ui::TranslateProvider>(
+		Ui::CreateTranslateProvider(session).release());
+	const auto raw = provider.get();
+	provider->request(
+		Ui::PrepareTranslateProviderRequest(
+			raw,
+			peer,
+			MsgId(0),
+			TextWithEntities{ text }),
+		Ui::TranslateOutLanguage(),
+		crl::guard(context.get(), [=](Ui::TranslateProviderResult result) {
+			callback(result.text ? result.text->text.trimmed() : QString());
+		}));
+}
+
 void TranslateComposeDraft(
 		not_null<Ui::InputField*> field,
 		History *history) {
@@ -3149,63 +3195,45 @@ void ComposeControls::initField() {
 		});
 	});
 	// hw: vendor parity - translate the draft automatically while typing, so
-	// that a Chinese draft is already English when it is sent.
-	// Installed unconditionally: initField() runs from init(), before
-	// setHistory() has ever run, so _history is still nullptr here and gating on
-	// it silently disabled the feature in every chat. Gating on the option here
-	// would instead freeze a value read before the options file is loaded. Both
-	// are checked when the timer fires.
+	// that a Chinese draft is already English by the time it is sent.
+	//
+	// Two implementation notes:
+	//  * initField() runs from init(), before setHistory() ever runs, so neither
+	//    _history nor the option value may be read here: both are re-read when
+	//    the delayed callback actually fires.
+	//  * the delay is scheduled with base::call_delayed(), the helper the
+	//    official code in this same file already uses, because a locally created
+	//    std::make_shared<base::Timer> never fired in practice - no outgoing
+	//    translation request was ever observed coming from it.
+	const auto hwOutInFlight = std::make_shared<bool>(false);
+	const auto hwOutLast = std::make_shared<QString>();
 	{
 		constexpr auto kHwAutoOutDelay = crl::time(1200);
-		const auto last = std::make_shared<QString>();
-		const auto hasCjk = [](const QString &text) {
-			for (const auto &ch : text) {
-				const auto u = ch.unicode();
-				if ((u >= 0x3400 && u <= 0x9FFF)
-					|| (u >= 0xF900 && u <= 0xFAFF)) {
-					return true;
-				}
-			}
-			return false;
-		};
-		const auto timer = std::make_shared<base::Timer>([=] {
-			if (!Ui::TranslateAutoOut() || !_history) {
-				return;
-			}
-			const auto text = _field->getLastText().trimmed();
-			if (text.isEmpty() || (text == *last) || !hasCjk(text)) {
-				return;
-			}
-			const auto target = Ui::TranslateOutLanguageCode().toLower();
-			if (target.isEmpty() || (target == u"zh"_q)) {
-				return;
-			}
-			// The provider must outlive the async request.
-			const auto provider = std::shared_ptr<Ui::TranslateProvider>(
-				Ui::CreateTranslateProvider(&_history->session()).release());
-			const auto raw = provider.get();
-			provider->request(
-				Ui::PrepareTranslateProviderRequest(
-					raw,
-					_history->peer,
-					MsgId(0),
-					TextWithEntities{ text }),
-				Ui::TranslateOutLanguage(),
-				crl::guard(_field.get(), [=](Ui::TranslateProviderResult result) {
-					if (!result.text) {
-						return;
-					}
-					const auto translated = result.text->text.trimmed();
-					if (translated.isEmpty() || (translated == text)) {
-						return;
-					}
-					*last = translated;
-					_field->setText(translated);
-				}));
-		});
 		_field->changes(
 		) | rpl::on_next([=] {
-			timer->callOnce(kHwAutoOutDelay);
+			base::call_delayed(kHwAutoOutDelay, _field.get(), [=] {
+				if (!_history || *_hwOutInFlight) {
+					return;
+				}
+				const auto text = _field->getLastText().trimmed();
+				if (!HwNeedsOutTranslation(text) || (text == *hwOutLast)) {
+					return;
+				}
+				*hwOutInFlight = true;
+				HwTranslateOut(
+					&session(),
+					_wrap.get(),
+					_history->peer,
+					text,
+					[=](QString translated) {
+						*hwOutInFlight = false;
+						if (translated.isEmpty() || (translated == text)) {
+							return;
+						}
+						*hwOutLast = translated;
+						_field->setText(translated);
+					});
+			});
 		}, _field->lifetime());
 	}
 	_field->submits(
@@ -3219,7 +3247,31 @@ void ComposeControls::initField() {
 			&& getTextWithAppliedMarkdown().text.isEmpty()) {
 			_scrollToMaxRequests.fire(adjustedSupportSendOptions(modifiers));
 		} else {
-			_fieldSubmits.fire_copy(modifiers);
+			// hw: outgoing auto-translation. The submit event is the only trigger
+			// proven to fire in this build, so the draft is translated here, right
+			// before the text is handed over to the send machinery. The untouched
+			// original is sent whenever the translation fails or comes back
+			// unchanged, and a second Enter sends immediately while a translation
+			// is already in flight, so a message is never lost.
+			const auto draft = getTextWithAppliedMarkdown().text;
+			if (!*hwOutInFlight && _history && HwNeedsOutTranslation(draft)) {
+				*hwOutInFlight = true;
+				HwTranslateOut(
+					&session(),
+					_wrap.get(),
+					_history->peer,
+					draft,
+					[=](QString translated) {
+						*hwOutInFlight = false;
+						if (!translated.isEmpty() && (translated != draft)) {
+							*hwOutLast = translated;
+							_field->setText(translated);
+						}
+						_fieldSubmits.fire_copy(modifiers);
+					});
+			} else {
+				_fieldSubmits.fire_copy(modifiers);
+			}
 		}
 	}, _field->lifetime());
 	_field->cancelled(
