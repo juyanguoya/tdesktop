@@ -37,6 +37,40 @@ base::options::option<QString> OptionTranslateOutLanguage({
 	.defaultValue = "en",
 });
 
+// hw: vendor-parity options. Values are strings, as base::options::Read
+// requires top-level string values in tdata/experimental_options.json.
+base::options::option<QString> OptionTranslateAutoIn({
+	.id = "translate-auto-in",
+	.name = "Translate incoming automatically",
+	.description = "Translate every incoming message automatically, including"
+		" private chats and small groups, e.g. \"true\".",
+	.defaultValue = "false",
+});
+
+base::options::option<QString> OptionTranslateInLanguage({
+	.id = "translate-in-language",
+	.name = "Translate incoming to",
+	.description = "Two letter language code incoming messages are translated"
+		" into, e.g. \"zh\".",
+	.defaultValue = "zh",
+});
+
+base::options::option<QString> OptionTranslateAutoOut({
+	.id = "translate-auto-out",
+	.name = "Translate outgoing automatically",
+	.description = "Translate the draft automatically while typing and replace"
+		" it with the translation, e.g. \"true\".",
+	.defaultValue = "false",
+});
+
+base::options::option<QString> OptionTranslateBilingual({
+	.id = "translate-bilingual",
+	.name = "Show original and translation",
+	.description = "Show the translation below the original text instead of"
+		" replacing the original, e.g. \"true\".",
+	.defaultValue = "true",
+});
+
 } // namespace
 
 namespace Ui {
@@ -65,6 +99,39 @@ LanguageId TranslateOutLanguage() {
 	const auto language = locale.language();
 	return LanguageId{
 		(language != QLocale::C) ? language : QLocale::English };
+}
+
+namespace {
+
+// hw: string options are used as booleans on purpose.
+[[nodiscard]] bool HwOptionEnabled(const QString &value) {
+	const auto normalized = value.trimmed().toLower();
+	return (normalized == u"true"_q)
+		|| (normalized == u"1"_q)
+		|| (normalized == u"yes"_q)
+		|| (normalized == u"on"_q);
+}
+
+} // namespace
+
+bool TranslateAutoIn() {
+	return HwOptionEnabled(OptionTranslateAutoIn.value());
+}
+
+LanguageId TranslateInLanguage() {
+	const auto code = OptionTranslateInLanguage.value().trimmed();
+	const auto locale = QLocale(code.isEmpty() ? u"zh"_q : code);
+	const auto language = locale.language();
+	return LanguageId{
+		(language != QLocale::C) ? language : QLocale::Chinese };
+}
+
+bool TranslateAutoOut() {
+	return HwOptionEnabled(OptionTranslateAutoOut.value());
+}
+
+bool TranslateBilingual() {
+	return HwOptionEnabled(OptionTranslateBilingual.value());
 }
 
 TranslateProviderRequest PrepareTranslateProviderRequest(

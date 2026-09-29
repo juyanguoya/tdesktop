@@ -66,14 +66,30 @@ void TranslateTracker::setup() {
 		return (data.value & ChannelDataFlag::AutoTranslation);
 	}) | rpl::distinct_until_changed();
 
+	// hw: force auto-translation for every chat, not only for channels.
+	auto forceTranslation = rpl::single(Ui::TranslateAutoIn());
+
 	using namespace rpl::mappers;
 	_trackingLanguage = rpl::combine(
 		Core::App().settings().translateChatEnabledValue(),
 		std::move(autoTranslationValue),
-		_1 && _2);
+		std::move(forceTranslation),
+		[](bool enabled, bool automatic, bool forced) {
+			return enabled && (automatic || forced);
+		});
 	_trackingLanguage.value() | rpl::on_next([=](bool tracking) {
 		_trackingLifetime.destroy();
 		if (tracking) {
+			// hw: pick the translation target automatically, otherwise no
+			// translation is ever requested.
+			if (!_history->translatedTo()) {
+				if (const auto to = Ui::TranslateInLanguage()) {
+					_history->translateTo(to);
+					if (const auto migrated = _history->migrateFrom()) {
+						migrated->translateTo(to);
+					}
+				}
+			}
 			recognizeCollected();
 			trackSkipLanguages();
 			trackTranslationDisabled();
@@ -339,9 +355,23 @@ void TranslateTracker::requestSome() {
 			}
 			const auto &id = _requested[index];
 			if (const auto item = owner->message(id)) {
-				item->translationDone(
-					to,
-					result.text.value_or(TextWithEntities()));
+				auto text = result.text.value_or(TextWithEntities());
+				// hw: bilingual display - keep the original above the
+				// translation (vendor parity). The marker is built from code
+				// points so that the sources stay ASCII-only.
+				const auto original = item->originalText();
+				if (Ui::TranslateBilingual()
+					&& !text.text.isEmpty()
+					&& !original.text.isEmpty()
+					&& (text.text != original.text)) {
+					auto composed = original;
+					composed.text += u"\n\n["_q
+						+ QString::fromUtf8("\xe8\xaf\x91\xe6\x96\x87")
+						+ u"] "_q
+						+ text.text;
+					text = std::move(composed);
+				}
+				item->translationDone(to, std::move(text));
 			}
 		},
 		[=] {

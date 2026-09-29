@@ -3148,6 +3148,58 @@ void ComposeControls::initField() {
 			TranslateComposeDraft(_field, _history);
 		});
 	});
+	// hw: vendor parity - translate the draft automatically while typing, so
+	// that a Chinese draft is already English when it is sent.
+	if (Ui::TranslateAutoOut() && _history) {
+		constexpr auto kHwAutoOutDelay = crl::time(1200);
+		const auto last = std::make_shared<QString>();
+		const auto hasCjk = [](const QString &text) {
+			for (const auto &ch : text) {
+				const auto u = ch.unicode();
+				if ((u >= 0x3400 && u <= 0x9FFF)
+					|| (u >= 0xF900 && u <= 0xFAFF)) {
+					return true;
+				}
+			}
+			return false;
+		};
+		const auto timer = std::make_shared<base::Timer>([=] {
+			const auto text = _field->getLastText().trimmed();
+			if (text.isEmpty() || (text == *last) || !hasCjk(text)) {
+				return;
+			}
+			const auto target = Ui::TranslateOutLanguageCode().toLower();
+			if (target.isEmpty() || (target == u"zh"_q)) {
+				return;
+			}
+			// The provider must outlive the async request.
+			const auto provider = std::shared_ptr<Ui::TranslateProvider>(
+				Ui::CreateTranslateProvider(&_history->session()).release());
+			const auto raw = provider.get();
+			provider->request(
+				Ui::PrepareTranslateProviderRequest(
+					raw,
+					_history->peer,
+					MsgId(0),
+					TextWithEntities{ text }),
+				Ui::TranslateOutLanguage(),
+				crl::guard(_field.get(), [=](Ui::TranslateProviderResult result) {
+					if (!result.text) {
+						return;
+					}
+					const auto translated = result.text->text.trimmed();
+					if (translated.isEmpty() || (translated == text)) {
+						return;
+					}
+					*last = translated;
+					_field->setText(translated);
+				}));
+		});
+		_field->changes(
+		) | rpl::on_next([=] {
+			timer->callOnce(kHwAutoOutDelay);
+		}, _field->lifetime());
+	}
 	_field->submits(
 	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
 		// Classify each submit once, before anyone handles it: a send

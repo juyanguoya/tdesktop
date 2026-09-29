@@ -25,6 +25,17 @@ namespace Ui {
 
 [[nodiscard]] LanguageId TranslateOutLanguage();
 
+// hw: auto-translation of incoming messages (vendor parity).
+[[nodiscard]] bool TranslateAutoIn();
+
+[[nodiscard]] LanguageId TranslateInLanguage();
+
+// hw: auto-translation of the draft while typing (vendor parity).
+[[nodiscard]] bool TranslateAutoOut();
+
+// hw: show the original text above the translation.
+[[nodiscard]] bool TranslateBilingual();
+
 [[nodiscard]] TranslateProviderRequest PrepareTranslateProviderRequest(
 	not_null<TranslateProvider*> provider,
 	not_null<PeerData*> peer,
