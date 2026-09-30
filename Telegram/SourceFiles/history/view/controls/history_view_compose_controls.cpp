@@ -3212,7 +3212,7 @@ void ComposeControls::initField() {
 		_field->changes(
 		) | rpl::on_next([=] {
 			base::call_delayed(kHwAutoOutDelay, _field.get(), [=] {
-				if (!_history || *_hwOutInFlight) {
+				if (!_history || *hwOutInFlight) {
 					return;
 				}
 				const auto text = _field->getLastText().trimmed();
