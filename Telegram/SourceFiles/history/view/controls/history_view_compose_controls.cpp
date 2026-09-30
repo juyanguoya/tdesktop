@@ -144,6 +144,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // QAction is available transitively (same include set as iv_editor_widget.cpp,
 // which also uses &QAction::triggered). Note the Windows CI builds against
 // Qt 5.15, where QAction lives in QtWidgets and <QtGui/QAction> does not exist.
+#include <QtCore/QFile>
 #include <QtWidgets/QMenu>
 
 namespace HistoryView {
@@ -3124,6 +3125,24 @@ namespace {
 	return !target.isEmpty() && (target != u"zh"_q);
 }
 
+// hw: file scope on purpose - this build may not touch the class header,
+// and ComposeControls::sendButtonSends() (the filter that decides whether a
+// send button click actually sends) has to be able to hold the untranslated
+// draft back while a translation is in flight.
+bool HwOutTranslationPending = false;
+
+// hw: append one line per decision to <exe dir>/hw-out-log.txt, so a
+// misbehaving build can be diagnosed from real runtime values instead of
+// guesses. ASCII source only; runtime text is written as UTF-8.
+void HwOutLog(const QString &line) {
+	auto file = QFile(QCoreApplication::applicationDirPath()
+		+ u"/hw-out-log.txt"_q);
+	if (file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+		file.write((QDateTime::currentDateTime().toString(u"HH:mm:ss "_q)
+			+ line + u"\n"_q).toUtf8());
+	}
+}
+
 template <typename Callback>
 void HwTranslateOut(
 		not_null<Main::Session*> session,
@@ -3145,6 +3164,41 @@ void HwTranslateOut(
 		crl::guard(context.get(), [callback, provider](Ui::TranslateProviderResult result) {
 			callback(result.text ? result.text->text.trimmed() : QString());
 		}));
+}
+
+// hw: translate the draft and only then let the caller continue with the
+// send. The original draft is sent whenever the translation fails, comes
+// back empty or comes back unchanged, so a message is never lost. While the
+// request is in flight the send button path is suppressed (see
+// HwOutTranslationPending); a second click flushes the original immediately.
+template <typename Apply, typename Callback>
+void HwOutStart(
+		not_null<Main::Session*> session,
+		not_null<QObject*> context,
+		not_null<PeerData*> peer,
+		const QString &draft,
+		const std::shared_ptr<bool> &inFlight,
+		const std::shared_ptr<bool> &flushed,
+		Apply &&apply,
+		Callback &&done) {
+	*inFlight = true;
+	*flushed = false;
+	HwOutTranslationPending = true;
+	HwOutLog(u"request len="_q + QString::number(draft.size()));
+	HwTranslateOut(session, context, peer, draft, [=](QString translated) {
+		*inFlight = false;
+		HwOutTranslationPending = false;
+		HwOutLog(u"result len="_q + QString::number(translated.size())
+			+ u" flushed="_q + (*flushed ? u"1"_q : u"0"_q)
+			+ u" same="_q + (translated == draft ? u"1"_q : u"0"_q));
+		if (*flushed) {
+			return;
+		}
+		if (!translated.isEmpty() && (translated != draft)) {
+			apply(translated);
+		}
+		done();
+	});
 }
 
 void TranslateComposeDraft(
@@ -3194,86 +3248,90 @@ void ComposeControls::initField() {
 			TranslateComposeDraft(_field, _history);
 		});
 	});
-	// hw: vendor parity - translate the draft automatically while typing, so
-	// that a Chinese draft is already English by the time it is sent.
+	// hw: outgoing auto-translation happens at send time only - the draft is
+	// translated and the field replaced right before the send machinery runs,
+	// so the message that leaves the client is the translation, and the field
+	// is never rewritten while the user is still typing.
 	//
-	// Two implementation notes:
-	//  * initField() runs from init(), before setHistory() ever runs, so neither
-	//    _history nor the option value may be read here: both are re-read when
-	//    the delayed callback actually fires.
-	//  * the delay is scheduled with base::call_delayed(), the helper the
-	//    official code in this same file already uses, because a locally created
-	//    std::make_shared<base::Timer> never fired in practice - no outgoing
-	//    translation request was ever observed coming from it.
+	// Both send entry points must be covered: the composer submits on Enter,
+	// but clicking the send button goes straight into sendContentRequests()
+	// through _send->clicks() and would send the raw draft. That path is held
+	// back by sendButtonSends() while a translation is pending and released
+	// again through _sendCustomRequests, the same way the send menu does it.
+	HwOutLog(u"initField autoOut="_q
+		+ (Ui::TranslateAutoOut() ? u"1"_q : u"0"_q)
+		+ u" outLang="_q + Ui::TranslateOutLanguageCode()
+		+ u" cjk="_q + (HwHasCjk(QString(u"\u6d4b"_q)) ? u"1"_q : u"0"_q));
 	const auto hwOutInFlight = std::make_shared<bool>(false);
-	const auto hwOutLast = std::make_shared<QString>();
-	{
-		constexpr auto kHwAutoOutDelay = crl::time(1200);
-		_field->changes(
-		) | rpl::on_next([=] {
-			base::call_delayed(kHwAutoOutDelay, _field.get(), [=] {
-				if (!_history || *hwOutInFlight) {
-					return;
-				}
-				const auto text = _field->getLastText().trimmed();
-				if (!HwNeedsOutTranslation(text) || (text == *hwOutLast)) {
-					return;
-				}
-				*hwOutInFlight = true;
-				HwTranslateOut(
-					&session(),
-					_wrap.get(),
-					_history->peer,
-					text,
-					[=](QString translated) {
-						*hwOutInFlight = false;
-						if (translated.isEmpty() || (translated == text)) {
-							return;
-						}
-						*hwOutLast = translated;
-						_field->setText(translated);
-					});
-			});
-		}, _field->lifetime());
-	}
+	const auto hwOutFlushed = std::make_shared<bool>(false);
 	_field->submits(
 	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
-		// Classify each submit once, before anyone handles it: a send
-		// clears the field, so checking emptiness later would see an
-		// empty field and send once more (marking as read).
 		if (_mode == Mode::Normal
 			&& !isEditingMessage()
 			&& !_voiceRecordBar->isListenState()
 			&& getTextWithAppliedMarkdown().text.isEmpty()) {
 			_scrollToMaxRequests.fire(adjustedSupportSendOptions(modifiers));
+			return;
+		}
+		const auto draft = getTextWithAppliedMarkdown().text;
+		HwOutLog(u"submit len="_q + QString::number(draft.size())
+			+ u" need="_q + (HwNeedsOutTranslation(draft) ? u"1"_q : u"0"_q)
+			+ u" hist="_q + (_history ? u"1"_q : u"0"_q)
+			+ u" busy="_q + (*hwOutInFlight ? u"1"_q : u"0"_q));
+		if (!*hwOutInFlight && _history && HwNeedsOutTranslation(draft)) {
+			HwOutStart(
+				&session(),
+				_field.get(),
+				_history->peer,
+				draft,
+				hwOutInFlight,
+				hwOutFlushed,
+				[=](const QString &translated) {
+					_field->setText(translated);
+				},
+				[=] {
+					_fieldSubmits.fire_copy(modifiers);
+				});
 		} else {
-			// hw: outgoing auto-translation. The submit event is the only trigger
-			// proven to fire in this build, so the draft is translated here, right
-			// before the text is handed over to the send machinery. The untouched
-			// original is sent whenever the translation fails or comes back
-			// unchanged, and a second Enter sends immediately while a translation
-			// is already in flight, so a message is never lost.
-			const auto draft = getTextWithAppliedMarkdown().text;
-			if (!*hwOutInFlight && _history && HwNeedsOutTranslation(draft)) {
-				*hwOutInFlight = true;
-				HwTranslateOut(
-					&session(),
-					_wrap.get(),
-					_history->peer,
-					draft,
-					[=](QString translated) {
-						*hwOutInFlight = false;
-						if (!translated.isEmpty() && (translated != draft)) {
-							*hwOutLast = translated;
-							_field->setText(translated);
-						}
-						_fieldSubmits.fire_copy(modifiers);
-					});
-			} else {
-				_fieldSubmits.fire_copy(modifiers);
-			}
+			_fieldSubmits.fire_copy(modifiers);
 		}
 	}, _field->lifetime());
+	_send->clicks(
+	) | rpl::on_next([=] {
+		if (_mode != Mode::Normal
+			|| isEditingMessage()
+			|| _voiceRecordBar->isListenState()
+			|| (_send->type() != baseSendButtonType())) {
+			return;
+		}
+		const auto draft = getTextWithAppliedMarkdown().text;
+		HwOutLog(u"click len="_q + QString::number(draft.size())
+			+ u" need="_q + (HwNeedsOutTranslation(draft) ? u"1"_q : u"0"_q)
+			+ u" hist="_q + (_history ? u"1"_q : u"0"_q)
+			+ u" busy="_q + (*hwOutInFlight ? u"1"_q : u"0"_q));
+		if (*hwOutInFlight) {
+			HwOutLog(u"click: translation in flight, send original now"_q);
+			*hwOutFlushed = true;
+			HwOutTranslationPending = false;
+			return;
+		}
+		if (!_history || !HwNeedsOutTranslation(draft)) {
+			return;
+		}
+		HwOutStart(
+			&session(),
+			_field.get(),
+			_history->peer,
+			draft,
+			hwOutInFlight,
+			hwOutFlushed,
+			[=](const QString &translated) {
+				_field->setText(translated);
+			},
+			[=] {
+				_sendCustomRequests.fire(Api::SendOptions());
+			});
+	}, _send->lifetime());
 	_field->cancelled(
 	) | rpl::on_next([=] {
 		escape();
@@ -4934,7 +4992,8 @@ auto ComposeControls::computeSendButtonType() const {
 }
 
 bool ComposeControls::sendButtonSends() const {
-	return (_send->type() == baseSendButtonType());
+	return (_send->type() == baseSendButtonType())
+		&& !HwOutTranslationPending;
 }
 
 bool ComposeControls::submitSends() const {
