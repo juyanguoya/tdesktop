@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_translate_tracker.h"
+#include "base/debug_log.h"
 
 #include "apiwrap.h"
 #include "api/api_transcribes.h"
@@ -110,6 +111,10 @@ bool TranslateTracker::enoughForRecognition() const {
 }
 
 void TranslateTracker::startBunch() {
+	// HWPROBE positive control: this file's code provably runs (inbound translation works),
+	// so its absence/presence in log.txt tells us whether the build is live at all.
+	static int hwProbeBunch = 0;
+	if (++hwProbeBunch <= 5) LOG(("HWPROBE tracker startBunch #%1").arg(hwProbeBunch));
 	_addedInBunch = 0;
 	// hw: forced auto-translation must have a working history translation state before
 	// _bunchTranslatedTo is captured. HistoryTranslation is created *only* by

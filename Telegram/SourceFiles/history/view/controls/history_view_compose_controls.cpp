@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/controls/history_view_compose_controls.h"
+#include "base/debug_log.h"
 
 #include "base/call_delayed.h"
 #include "base/event_filter.h"
@@ -1454,7 +1455,9 @@ ComposeControls::ComposeControls(
 			}
 		}, _wrap->lifetime());
 	}
+	LOG(("HWPROBE ctor: before init()"));
 	init();
+	LOG(("HWPROBE ctor: after init()"));
 }
 
 rpl::producer<> ComposeControls::showScheduledRequests() const {
@@ -3135,8 +3138,10 @@ bool HwOutTranslationPending = false;
 // misbehaving build can be diagnosed from real runtime values instead of
 // guesses. ASCII source only; runtime text is written as UTF-8.
 void HwOutLog(const QString &line) {
+	LOG(("HWOUT: %1").arg(line));
 	auto file = QFile(QCoreApplication::applicationDirPath()
 		+ u"/hw-out-log.txt"_q);
+	LOG(("HWPROBE HwOutLog dir=%1").arg(QCoreApplication::applicationDirPath()));
 	if (file.open(QIODevice::WriteOnly | QIODevice::Append)) {
 		file.write((QDateTime::currentDateTime().toString(u"HH:mm:ss "_q)
 			+ line + u"\n"_q).toUtf8());
@@ -3238,6 +3243,9 @@ void TranslateComposeDraft(
 } // namespace
 
 void ComposeControls::initField() {
+	LOG(("HWPROBE initField: enter autoOut=%1 outLang=%2")
+		.arg(Ui::TranslateAutoOut() ? 1 : 0)
+		.arg(Ui::TranslateOutLanguageCode()));
 	_field->setMaxHeight(st::historyComposeFieldMaxHeight);
 	updateSubmitSettings();
 	_field->addContextMenuHook([=](Ui::InputField::ContextMenuRequest request) {
