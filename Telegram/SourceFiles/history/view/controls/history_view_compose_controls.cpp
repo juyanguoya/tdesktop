@@ -3142,7 +3142,7 @@ void HwTranslateOut(
 			MsgId(0),
 			TextWithEntities{ text }),
 		Ui::TranslateOutLanguage(),
-		crl::guard(context.get(), [=](Ui::TranslateProviderResult result) {
+		crl::guard(context.get(), [=, provider](Ui::TranslateProviderResult result) {
 			callback(result.text ? result.text->text.trimmed() : QString());
 		}));
 }
