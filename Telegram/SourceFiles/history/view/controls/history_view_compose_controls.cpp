@@ -3300,21 +3300,28 @@ void ComposeControls::initField() {
 	) | rpl::on_next([=] {
 		if (_mode != Mode::Normal
 			|| isEditingMessage()
-			|| _voiceRecordBar->isListenState()
-			|| (_send->type() != baseSendButtonType())) {
+			|| _voiceRecordBar->isListenState()) {
 			return;
 		}
 		const auto draft = getTextWithAppliedMarkdown().text;
-		HwOutLog(u"click len="_q + QString::number(draft.size())
-			+ u" need="_q + (HwNeedsOutTranslation(draft) ? u"1"_q : u"0"_q)
-			+ u" hist="_q + (_history ? u"1"_q : u"0"_q)
-			+ u" busy="_q + (*hwOutInFlight ? u"1"_q : u"0"_q));
 		if (*hwOutInFlight) {
 			HwOutLog(u"click: translation in flight, send original now"_q);
 			*hwOutFlushed = true;
 			HwOutTranslationPending = false;
 			return;
 		}
+		// hw: sendButtonSends() carries the "is the button in its send state"
+		// test. baseSendButtonType() cannot be called from here: the header
+		// declares it with an auto return type, so any use before its own
+		// definition further down this file is rejected (MSVC C3779), even
+		// though this lambda only runs later.
+		if (!sendButtonSends()) {
+			return;
+		}
+		HwOutLog(u"click len="_q + QString::number(draft.size())
+			+ u" need="_q + (HwNeedsOutTranslation(draft) ? u"1"_q : u"0"_q)
+			+ u" hist="_q + (_history ? u"1"_q : u"0"_q)
+			+ u" busy="_q + (*hwOutInFlight ? u"1"_q : u"0"_q));
 		if (!_history || !HwNeedsOutTranslation(draft)) {
 			return;
 		}
